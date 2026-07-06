@@ -1,0 +1,10 @@
+# Profiling outputs (large traces, logs, benchmark data)
+output/
+
+# Common generated / local files
+*.log
+*.trace.json.gz
+*.png
+__pycache__/
+*.pyc
+.DS_Store
