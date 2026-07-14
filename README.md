@@ -1,7 +1,7 @@
 # SGLang Profiling Tutorial
 
 A personal, beginner-first cheat sheet for profiling [SGLang](https://github.com/sgl-project/sglang)
-serving on AMD (ROCm / MI35x) GPUs. If you forget the steps, **just read this top to bottom** —
+serving on Nvidia (CUDA / B200) GPUs. If you forget the steps, **just read this top to bottom** —
 it is written so you can re-learn the whole flow in a few minutes.
 
 ---
@@ -23,7 +23,7 @@ flowchart LR
     D -- "open & inspect" --> E
 ```
 
-1. **`run_container.sh`** — starts a Docker container that has SGLang + ROCm pre-installed,
+1. **`run_container.sh`** — starts a Docker container that has SGLang + CUDA pre-installed,
    and mounts your model files, this project folder, and (optionally) your SGLang source.
 2. **`server_launch.sh`** — inside that container, boots the SGLang inference server
    (loads the model, opens the API on a port).
@@ -39,9 +39,10 @@ Then you open the trace files in a viewer (Perfetto) to see where time is spent.
 
 ## 2. Prerequisites (don't skip)
 
-- An AMD GPU host with ROCm drivers (`/dev/kfd` and `/dev/dri` must exist).
+- An Nvidia GPU host (B200) with the NVIDIA Container Toolkit installed (so `docker run --gpus` works).
 - Docker installed and your user able to run it.
-- The model weights downloaded to `/raid/models/...` on the host.
+- The model weights already present in the local HF-hub cache at
+  `/models/models--Qwen--Qwen3.5-397B-A17B-FP8/snapshots/<hash>/` on the host.
 - Enough disk space in `output/` — **each trace is ~100 MB per GPU (TP rank)**, so a single
   4-GPU run produces ~400 MB. These fill up fast.
 
@@ -54,10 +55,10 @@ Then you open the trace files in a viewer (Perfetto) to see where time is spent.
 These values must **match across scripts** or nothing connects:
 
 | Setting        | Where it's set                         | Current value                               |
-|----------------|----------------------------------------|---------------------------------------------|
-| Model path     | all scripts (`MODEL` / `MODELS_DIR`)   | `/raid/models/Qwen3.5-397B-A17B-FP8/`       |
+|----------------|-----------------------------------------|---------------------------------------------|
+| Model path     | all scripts (`MODEL` / `MODELS_DIR`)   | `/models/models--Qwen--Qwen3.5-397B-A17B-FP8/snapshots/ea5b4f81096f3901c91dea97f81324302495781d/` |
 | Port           | `server_launch.sh` + `client_bench.sh` | `9001`                                       |
-| TP (GPUs)      | `server_launch.sh` (`--tp`)            | `4`                                          |
+| TP (GPUs)      | `server_launch.sh` (`--tp`)             | `4`                                           |
 | Output dir     | `client_bench.sh` (`--profile-output-dir`) | `/workspace/profiling/output`           |
 
 > **Easy-to-forget rule #1:** the client `PORT` must equal the server `--port`.
@@ -73,13 +74,13 @@ These values must **match across scripts** or nothing connects:
 This drops you into a shell **inside** the container at `/workspace/profiling`.
 Key things it does (from `run_container.sh`):
 
-- Image: `lmsysorg/sglang:v0.5.12-rocm720-mi35x` (SGLang + ROCm, MI35x).
-- Passes the GPUs into the container (`--device=/dev/kfd --device=/dev/dri --group-add video`).
+- Image: `lmsysorg/sglang:v0.5.14-cu130` (SGLang + CUDA 13.0, B200-ready).
+- Passes GPUs into the container (`--gpus '"device=0,1,2,3"'` — only 4 of the 8 GPUs on the box, matching TP=4).
 - `--cap-add=SYS_PTRACE` + `--security-opt seccomp=unconfined` — **required for profiling**
   (the profiler needs to trace the process). Don't remove these.
 - Volume mounts (host path → container path):
-  - `/raid/models` → `/raid/models` (your model weights)
-  - `$HOME/workspace/profiling` → `/workspace/profiling` (this repo; traces land here so
+  - `/models` → `/models` (HF-hub cache with the model weights)
+  - `$HOME/workspace/sglang-profiling-tutorial` → `/workspace/profiling` (this repo; traces land here so
     you can see them on the host too)
   - `$HOME/workspace/sglang` → `/workspace/sglang` (optional: your own SGLang source)
 - Publishes port `9001`.
@@ -98,8 +99,11 @@ Open a shell in the container and run:
 Wait until you see the server report it is ready / listening on port `9001`.
 Notable flags (from `server_launch.sh`):
 
-- `--tp 4` — tensor-parallel across 4 GPUs (`HIP_VISIBLE_DEVICES=0,1,2,3`).
-- `--attention-backend aiter` + `SGLANG_USE_AITER=1` — AMD AITER attention kernels.
+- `--tp 4 --ep-size 1` — tensor-parallel across 4 GPUs (`CUDA_VISIBLE_DEVICES=0,1,2,3`), no separate expert parallelism.
+- `--attention-backend trtllm_mha` + `--moe-runner-backend flashinfer_trtllm` — Nvidia TensorRT-LLM/FlashInfer kernels for B200.
+- `--quantization fp8 --kv-cache-dtype fp8_e4m3` — matches the FP8 checkpoint and uses FP8 KV cache.
+- `--mamba-ssm-dtype bfloat16` — Qwen3.5's hybrid linear-attention (mamba-style) layers run in bf16.
+- `--enable-symm-mem` — NCCL symmetric memory for faster collectives on B200/NVLink.
 - `--disable-radix-cache` — turns off prefix caching so benchmark numbers are clean
   and repeatable (no cache hits skewing results).
 - `--mem-fraction-static 0.9` — reserve 90% of VRAM for the model/KV cache.
@@ -121,7 +125,7 @@ Once the server is up:
 What it does (from `client_bench.sh`):
 
 - Runs `python3 -m sglang.bench_serving` against `localhost:9001`.
-- `--dataset-name random` with `--random-input 8192 --random-output 1024` — synthetic prompts
+- `--dataset-name random` with `--random-input-len 8192 --random-output-len 1024` — synthetic prompts
   of 8192 input tokens and 1024 output tokens.
 - `--max-concurrency 4` and `num_prompts = concurrency * 2` — how much load to apply.
 - **`--profile`** — this is the switch that turns on the Torch profiler.
@@ -162,8 +166,10 @@ The `.trace.json.gz` files are Chrome/Torch trace format. To view:
   doesn't create fake speedups between runs.
 - **Container name** is `wesley-sglang-profiling-kickstart`; use it with `docker exec` to open
   extra shells.
-- **Paths are container paths.** `/workspace/profiling` inside == `$HOME/workspace/profiling`
+- **Paths are container paths.** `/workspace/profiling` inside == `$HOME/workspace/sglang-profiling-tutorial`
   on the host.
+- **`sglang.bench_serving` flags changed between versions** — this image's build wants
+  `--random-input-len` / `--random-output-len`, not the older `--random-input` / `--random-output`.
 
 ---
 
@@ -171,7 +177,7 @@ The `.trace.json.gz` files are Chrome/Torch trace format. To view:
 
 | File               | What it is                                                        |
 |--------------------|-------------------------------------------------------------------|
-| `run_container.sh` | Starts the ROCm SGLang Docker container with the right mounts/caps. |
+| `run_container.sh` | Starts the CUDA SGLang Docker container with the right mounts/caps. |
 | `server_launch.sh` | Launches the SGLang inference server (model, TP, backend, port).  |
 | `client_bench.sh`  | Sends benchmark traffic **with profiling** and saves traces.      |
 | `output/`          | Profiling/benchmark results (git-ignored — never pushed).         |

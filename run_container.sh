@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # ===================== User-adjustable params =====================
-IMAGE="lmsysorg/sglang:v0.5.12-rocm720-mi35x"
+IMAGE="lmsysorg/sglang:v0.5.14-cu130"
 CONTAINER_NAME="wesley-sglang-profiling-kickstart"
 
-MODELS_DIR="/raid/models"
-PROFILING_DIR="$HOME/workspace/profiling"
+MODELS_DIR="/models"
+PROFILING_DIR="$HOME/workspace/sglang-profiling-tutorial"
 # Optional: mount your local sglang source to profile it instead of the
 # version baked into the image (then run `pip install -e .` inside).
 SGLANG_SRC="$HOME/workspace/sglang"
@@ -16,8 +16,7 @@ PORT=9001
 
 docker run -it --rm \
   --name "${CONTAINER_NAME}" \
-  --device=/dev/kfd --device=/dev/dri \
-  --group-add video \
+  --gpus '"device=0,1,2,3"' \
   --ipc=host --shm-size 16g \
   --cap-add=SYS_PTRACE \
   --security-opt seccomp=unconfined \
