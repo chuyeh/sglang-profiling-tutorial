@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ===================== User-adjustable params =====================
 IMAGE="lmsysorg/sglang:v0.5.14-cu130"
-CONTAINER_NAME="wesley-sglang-profiling-kickstart"
+CONTAINER_NAME="wesley-sglang-profiling-qwen3.5"
 
 MODELS_DIR="/models"
 PROFILING_DIR="$HOME/workspace/sglang-profiling-tutorial"

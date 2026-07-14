@@ -18,8 +18,7 @@ random_range_ratio=1.0
 CSV_OUT="bench_results.csv"
 PLOT_OUT="throughput_vs_median_e2e_latency.png"
 # =================================================================
-
-concurrencies=(4)
+concurrencies=(4) # 8, 16, 32, 64, 128, 256
 
 # Start fresh CSV
 echo "concurrency,median_e2e_ms,total_token_throughput_tok_s" > "$CSV_OUT"
@@ -28,7 +27,7 @@ RUN_TIMESTAMP="$(date +"%Y%m%d_%H%M%S")"
 for c in "${concurrencies[@]}"; do
   max_concurrency="$c"
   # num_prompts=$((max_concurrency * 8))
-  num_prompts=$((max_concurrency * 2))
+  num_prompts=$((max_concurrency * 10))
 
   echo "=== Running benchmark: concurrency=${c}, num_prompts=${num_prompts} ==="
   tmp_log="server-mode_benchmark_results_max_concurrency${max_concurrency}_${RUN_TIMESTAMP}.log"
@@ -42,18 +41,22 @@ for c in "${concurrencies[@]}"; do
   #     "activities": ["RPD"]
   #   }'
 
+  # --profile turns on the server-side Torch profiler for this run. Keep the
+  # capture window small (--profile-num-steps) so traces stay manageable and
+  # the profiling overhead is bounded. Requires the server to be launched with
+  # PROFILE=1 (CUDA graphs disabled), otherwise it segfaults on ROCm.
   python3 -m sglang.bench_serving \
-      --host "${HOST}" \
-      --port "${PORT}" \
-      --model "${MODEL}" \
-      --dataset-name "${DATASET}" \
-      --random-input-len "${input_tokens}" \
-      --random-output-len "${output_tokens}" \
-      --random-range-ratio "${random_range_ratio}" \
-      --max-concurrency "${max_concurrency}" \
-      --profile \
-      --profile-output-dir /workspace/profiling/output \
-      --num-prompt "${num_prompts}" 2>&1 | tee "${tmp_log}"
+    --host "${HOST}" \
+    --port "${PORT}" \
+    --model "${MODEL}" \
+    --dataset-name "${DATASET}" \
+    --random-input "${input_tokens}" \
+    --random-output "${output_tokens}" \
+    --random-range-ratio "${random_range_ratio}" \
+    --max-concurrency "${max_concurrency}" \
+    --profile \
+    --profile-output-dir /workspace/profiling/output \
+    --num-prompt "${num_prompts}" 2>&1 | tee "${tmp_log}"
   # python -m sglang.test.send_one --port 9000
   # curl http://localhost:9000/stop_profile -H "Content-Type: application/json"
 
