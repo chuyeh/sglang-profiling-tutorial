@@ -2,8 +2,10 @@
 set -euo pipefail
 
 # ===================== User-adjustable params =====================
-IMAGE="lmsysorg/sglang:v0.5.12-rocm720-mi35x"
-CONTAINER_NAME="wesley-sglang-profiling-kickstart"
+# "lmsysorg/sglang-rocm:v0.5.12.post1-rocm720-mi35x-20260528" -> old image used in 06/05
+# "lmsysorg/sglang:v0.5.14-rocm720-mi35x" -> baseline image used in 07/05
+IMAGE="${IMAGE:-sglang:v0.5.14-rocm720-mi35x-pr24651}"
+CONTAINER_NAME="wesley-sglang-profiling-qwen3.5-fp8"
 
 MODELS_DIR="/raid/models"
 PROFILING_DIR="$HOME/workspace/profiling"
@@ -27,4 +29,4 @@ docker run -it --rm \
   -w /workspace/profiling \
   -p "${PORT}:${PORT}" \
   "${IMAGE}" \
-  /bin/bash
+  bash -c 'pip install -e /workspace/profiling/torch-profiler-parser && exec /bin/bash'
