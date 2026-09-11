@@ -112,44 +112,158 @@ To overlay a local SGLang checkout instead of the image tree:
 SGLANG_ROOT=/home/chuyeh/workspace/sglang ./qwen3.5_fp4_mi355x_launch_server.sh
 ```
 
-## Torch profiling an AgentX point
+## Recommended benchmark-then-profile workflow
 
-Use a **separate profiling run** from the benchmark result you intend to report. Torch profiling, especially with stacks and input shapes, perturbs latency and throughput.
+Treat the benchmark and profiler as two passes of the same experiment:
 
-The convenience wrapper accepts the same five positional arguments as the colleague script:
-
-```bash
-# HBM-only TP4 point on GPUs 4-7.
-SGLANG_ROOT=/path/to/sglang \
-  ./run_profile_point.sh my-change 4 32 4,5,6,7 none
-
-# TP4 HiCache point. The DRAM budget is required for metadata.
-SGLANG_ROOT=/path/to/sglang DRAM_GB=1199 \
-  ./run_profile_point.sh my-change 4 56 4,5,6,7 dram
+```text
+clean benchmark -> inspect results -> select a bad point -> fresh profiled replay
 ```
 
-Profiling defaults:
+Do **not** report the metrics from the profiled replay. Torch profiling slows CPU and GPU work, and AgentX is closed-loop: slower responses change when later turns and subagents are submitted. A 12-second capture can therefore affect more than those 12 seconds of aggregate results.
+
+A torch trace is not a flight recorder. It cannot recover work that happened before profiling was enabled. “Profile after benchmarking” means rerunning the selected `(TP, concurrency, KV mode)` point with the profiler active.
+
+### Pass 1: run a clean benchmark
+
+Choose one experiment identity and keep its serving configuration in exported variables. This example uses the TP4 HiCache concurrency-56 point:
+
+```bash
+cd /path/to/sglang-profiling-tutorial/agentx
+
+CASE_ID=qwen35-tp4-c56-hicache
+CASE_ROOT=$PWD/../campaigns/$CASE_ID
+KV_MODE=dram
+
+export IMAGE=rocm/sgl-dev:v0.5.19-rocm720-mi35x-20260906
+export SGLANG_ROOT=/path/to/your/sglang       # omit to use the image's SGLang
+export TP=4 EP_SIZE=1 CONC=56 GPUS=4,5,6,7
+export KV_OFFLOADING=dram KV_OFFLOAD_BACKEND=hicache
+export TOTAL_CPU_DRAM_GB=1199
+export DURATION=3600
+export AIPERF_WARMUP_REQUESTS_PER_LANE=10
+export AIPERF_UNSAFE_OVERRIDE=false
+export ENABLE_TORCH_PROFILER=0
+export PORT=18988
+export CONTAINER_NAME=agentx-$CASE_ID-benchmark
+export RESULT_DIR=$CASE_ROOT/benchmark
+
+./qwen3.5_fp4_mi355x_launch_server.sh
+./qwen3.5_fp4_mi355x_run_client.sh
+docker stop "$CONTAINER_NAME"
+docker rm "$CONTAINER_NAME"
+```
+
+Use `DURATION=3600` for an InferenceX-style result. A shorter duration of at least 900 seconds is useful for private triage but is not directly comparable to the canonical one-hour result.
+
+### Pass 2: decide whether the point needs profiling
+
+Inspect the clean aggregate:
+
+```bash
+jq '{
+  conc,
+  successful_requests: .num_requests_successful,
+  errors: .request_accounting.records_error_dropped,
+  throughput_per_gpu_tps:
+    .request_metrics.throughput.per_gpu.total_tput_tps,
+  p90_e2e_interactivity:
+    .request_metrics.latency.e2e_norm_intvty.p90,
+  p90_ttft_seconds: .request_metrics.latency.ttft.p90,
+  gpu_kv_usage: .server_metrics.kv_cache.gpu_usage_pct,
+  cpu_kv_usage: .server_metrics.kv_cache.cpu_usage_pct
+}' "$CASE_ROOT/benchmark/agentx_result.json"
+```
+
+A point is a useful profiling candidate when it has:
+
+- lower throughput or interactivity than its baseline;
+- unexpectedly high TTFT or queueing;
+- request errors, timeouts, or a server stall;
+- unusual GPU/CPU KV-cache behavior;
+- a regression isolated to one TP, concurrency, or HiCache setting.
+
+Compare like with like. For example, compare TP4 HiCache C56 against another TP4 HiCache C56 run, not against TP2 C28.
+
+The clean run's `aiperf_artifacts/profile_export_aiperf_timeslices.csv` and `client.log` can help identify whether the problem appears early, late, or only under high queue/KV pressure. Use that evidence to choose `PROFILE_DELAY_S` for the replay.
+
+### Pass 3: rerun that exact point with torch profiling
+
+Start from a fresh container so weights, KV cache, and replay warmup begin from the same state. Preserve the image/source commit, model, dataset revision, TP/EP, concurrency, GPU count, KV mode, DRAM budget, server flags, warmup count, and synthetic-acceptance settings.
+
+```bash
+PROFILE_RESULT=$CASE_ROOT/profile
+
+RESULT_DIR="$PROFILE_RESULT" \
+CONTAINER_NAME=agentx-$CASE_ID-profile \
+PORT=18988 \
+DURATION=3600 \
+PROFILE_DELAY_S=300 \
+PROFILE_WINDOW_S=12 \
+PROFILE_MIN_RUNNING_REQUESTS=1 \
+STOP_CONTAINER_AFTER=1 \
+  ./run_profile_point.sh "$CASE_ID-profile" "$TP" "$CONC" "$GPUS" "$KV_MODE"
+```
+
+For an HBM-only point, set `KV_MODE=none` and omit the HiCache DRAM budget. `run_profile_point.sh` accepts:
+
+```text
+run_profile_point.sh <label> <TP> <CONC> <GPUS> <none|dram>
+```
+
+Its profiler-specific defaults are:
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `DURATION` | `1500` | AIPerf measured duration |
+| `DURATION` | `1500` | AIPerf measured duration when not already exported |
 | `PROFILE_DELAY_S` (`WARM`) | `840` | Delay **after AIPerf’s measured phase starts** |
 | `PROFILE_WINDOW_S` (`WINDOW`) | `12` | Torch-profiler capture duration |
 | `PROFILE_MIN_RUNNING_REQUESTS` | `1` | Do not start during an AgentX idle gap |
-| `PROFILE_ACTIVITIES` | `CPU,GPU` | SGLang profiler activities (`GPU` is correct for ROCm PyTorch) |
+| `PROFILE_ACTIVITIES` | `CPU,GPU` | SGLang activities (`GPU` is correct for ROCm PyTorch) |
 | `PROFILE_WITH_STACK` | `1` | Collect operator source stacks |
 | `PROFILE_RECORD_SHAPES` | `1` | Collect operator input shapes |
 | `STOP_CONTAINER_AFTER` | `0` | Leave the server available for inspection |
 
-The adapted controller does not rely only on time since server health. It:
+The trigger:
 
 1. follows the new AIPerf log until `Phase profiling (profiling) started`;
 2. waits `PROFILE_DELAY_S`;
 3. polls `sglang:num_running_reqs` so an inter-turn idle gap is not captured;
-4. calls `/start_profile`, captures for `PROFILE_WINDOW_S`, calls `/stop_profile`;
-5. fails if health, phase detection, endpoint calls, or trace export fail.
+4. calls `/start_profile`, records for `PROFILE_WINDOW_S`, then calls `/stop_profile`;
+5. fails if phase detection, active-load detection, endpoint calls, or trace export fail.
 
-To keep launch and replay manually split, pass the same environment to both:
+If the clean run shows the issue only late in the hour, keep the same `DURATION` and move `PROFILE_DELAY_S` near that period. If the issue is steady-state and appears early, the profiling replay can be shortened, provided `PROFILE_DELAY_S + PROFILE_WINDOW_S < DURATION`.
+
+### Pass 4: correlate the trace with the clean result
+
+Keep these artifacts together:
+
+```text
+benchmark/agentx_result.json
+benchmark/aiperf_artifacts/profile_export_aiperf_timeslices.csv
+benchmark/client.log
+benchmark/server.log
+profile/profile_point_env.txt
+profile/sglang_command.txt
+profile/profile_trigger.log
+profile/profile/*
+```
+
+Open each per-rank `*.trace.json` or `*.trace.json.gz` file in Perfetto. Start by checking:
+
+- CPU gaps before GPU kernels: scheduler, tokenization, or launch overhead;
+- long GPU kernels or empty GPU regions;
+- TP collective overlap and rank imbalance;
+- prefill-versus-decode behavior;
+- HiCache copy/load-back work around latency spikes.
+
+`profile_trigger.log` records the exact measured-phase detection time, active request count, profile payload, and start/stop responses. Use it to align the trace with `server.log` and AIPerf timeslices.
+
+Multi-rank traces can be large. Start with a 5-12 second window. Disable `PROFILE_WITH_STACK` or `PROFILE_RECORD_SHAPES` when kernel timing is sufficient.
+
+### One-pass mode for quick debugging
+
+You can also enable profiling directly in the manually split launch/client workflow:
 
 ```bash
 export TP=4 CONC=56 GPUS=4,5,6,7
@@ -161,7 +275,7 @@ export ENABLE_TORCH_PROFILER=1 PROFILE_DELAY_S=300 PROFILE_WINDOW_S=12
 ./qwen3.5_fp4_mi355x_run_client.sh
 ```
 
-Use a fresh `RESULT_DIR` for every capture. A short multi-rank trace can still be large; reduce `PROFILE_WINDOW_S`, or disable `PROFILE_WITH_STACK` / `PROFILE_RECORD_SHAPES`, when only kernel timing is needed.
+This is convenient for quick investigation, but its aggregate benchmark metrics are profiler-contaminated. Always use a fresh `RESULT_DIR` for every capture.
 
 ## Moving to another 8-GPU MI355X server
 
