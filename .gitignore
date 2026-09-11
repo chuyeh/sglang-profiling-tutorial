@@ -8,3 +8,7 @@ output/
 __pycache__/
 *.pyc
 .DS_Store
+
+/exp/
+/campaigns/
+*/.cache/
