@@ -12,3 +12,6 @@ __pycache__/
 /exp/
 /campaigns/
 */.cache/
+
+# Per-machine AgentX paths
+/agentx/machine.conf

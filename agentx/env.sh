@@ -19,6 +19,7 @@ AIPERF_HOST="${AIPERF_HOST:-$_default_aiperf_host}"
 unset _default_aiperf_host
 
 IMAGE="${IMAGE:-rocm/sgl-dev:v0.5.19-rocm720-mi35x-20260906}"
+RECIPE_FINGERPRINT="${RECIPE_FINGERPRINT:-}"
 CONTAINER_NAME="${CONTAINER_NAME:-agentx-qwen35-fp4-mi355x}"
 
 MODEL="${MODEL:-amd/Qwen3.5-397B-A17B-MXFP4}"
@@ -38,9 +39,14 @@ AGENTX_TRACE_REVISION="${AGENTX_TRACE_REVISION:-8fecd2fc56694469f758f0afbbb6335a
 HF_HOME="${HF_HOME:-$AGENTX_DIR/.cache/huggingface}"
 HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
 HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"
+# Reuse downloads and AIPerf's uv package cache across fresh point containers.
+# The virtualenv itself remains point-local so interrupted runs cannot poison
+# later points.
+AGENTX_SHARED_CACHE_DIR="${AGENTX_SHARED_CACHE_DIR:-$AGENTX_DIR/.cache/runtime}"
 
 TP="${TP:-2}"
 EP_SIZE="${EP_SIZE:-1}"
+DP_ATTENTION="${DP_ATTENTION:-false}"
 CONC="${CONC:-1}"
 KV_OFFLOADING="${KV_OFFLOADING:-none}"
 KV_OFFLOAD_BACKEND="${KV_OFFLOAD_BACKEND:-}"
@@ -138,6 +144,10 @@ agentx_prepare_hf_cache() {
     dest="$HF_HUB_CACHE/datasets--semianalysisai--cc-traces-weka-062126-256k"
     snap="$dest/snapshots/$AGENTX_TRACE_REVISION"
     mkdir -p "$dest/refs" "$snap" "$HF_DATASETS_CACHE"
+    mkdir -p "$AGENTX_SHARED_CACHE_DIR/uv/bin" \
+        "$AGENTX_SHARED_CACHE_DIR/uv-cache" \
+        "$AGENTX_SHARED_CACHE_DIR/aiperf-mmap" \
+        "$AGENTX_SHARED_CACHE_DIR/hf-datasets"
     printf '%s\n' "$AGENTX_TRACE_REVISION" > "$dest/refs/main"
     for name in traces.jsonl README.md stats.txt .gitattributes plots; do
         if [[ -e "$AGENTX_TRACE_LOCAL_DIR/$name" ]]; then
@@ -163,10 +173,6 @@ agentx_require_paths() {
         echo "ERROR: AIPERF_HOST is not an aiperf checkout: $AIPERF_HOST" >&2
         return 1
     fi
-    if [[ ! -d "$INFERENCEX_ROOT/utils/aiperf" ]]; then
-        echo "ERROR: InferenceX aiperf mount point missing: $INFERENCEX_ROOT/utils/aiperf" >&2
-        return 1
-    fi
 }
 
 agentx_container_env() {
@@ -183,11 +189,13 @@ ROCR_VISIBLE_DEVICES=$GPUS
 HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES
 HF_HOME=/hf_home
 HF_HUB_CACHE=/hf_home/hub
-HF_DATASETS_CACHE=/results/hf_datasets_cache
+HF_DATASETS_CACHE=/agentx-cache/hf-datasets
 HF_HUB_DISABLE_XET=1
 HF_HUB_OFFLINE=
 TRANSFORMERS_OFFLINE=
 TOKENIZERS_PARALLELISM=false
+IMAGE=$IMAGE
+RECIPE_FINGERPRINT=$RECIPE_FINGERPRINT
 MODEL=$MODEL
 MODEL_PATH=$MODEL_PATH
 MODEL_PREFIX=$MODEL_PREFIX
@@ -196,8 +204,12 @@ FRAMEWORK=$FRAMEWORK
 PRECISION=$PRECISION
 SPEC_DECODING=$SPEC_DECODING
 RUNNER_TYPE=$RUNNER_TYPE
+SCENARIO_TYPE=agentic-coding
+IS_AGENTIC=1
+IS_MULTINODE=false
 TP=$TP
 EP_SIZE=$EP_SIZE
+DP_ATTENTION=$DP_ATTENTION
 CONC=$CONC
 KV_OFFLOADING=$KV_OFFLOADING
 KV_OFFLOAD_BACKEND=$KV_OFFLOAD_BACKEND
@@ -215,7 +227,10 @@ RESULT_DIR=/results
 AGENTIC_OUTPUT_DIR=/results
 INFMAX_CONTAINER_WORKSPACE=/inferencex
 AIPERF_DIR=/opt/aiperf
-AIPERF_DATASET_MMAP_CACHE_DIR=/results/aiperf_mmap_cache
+AIPERF_RUNTIME_DIR=/tmp/inferencex-agentic
+AIPERF_UV_INSTALL_DIR=/agentx-cache/uv/bin
+AIPERF_UV_CACHE_DIR=/agentx-cache/uv-cache
+AIPERF_DATASET_MMAP_CACHE_DIR=/agentx-cache/aiperf-mmap
 AIPERF_SERVER_METRICS_URLS=http://localhost:${PORT}/metrics
 AIPERF_REQUIRED_SERVER_METRIC_PREFIX=sglang:
 PYTHONPYCACHEPREFIX=/tmp/inferencex-pycache

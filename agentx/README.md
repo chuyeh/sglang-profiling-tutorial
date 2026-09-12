@@ -2,20 +2,103 @@
 
 Split InferenceX’s combined AgentX recipe into a **server launch** script and an **AIPerf client** script so you can keep SGLang up, rerun the benchmark, and stop the container yourself.
 
-This is a local workflow. It is not a drop-in replacement for an official InferenceX CI submission (those use `DURATION=3600` and the `lmsysorg/sglang-rocm` image).
+The manual split workflow defaults to a short local run. The one-click sweep below pins the official 3600-second recipe and image, but it is still a private reproduction rather than an InferenceX CI submission.
 
 Upstream recipe: [qwen3.5_fp4_mi355x_sglang_mtp.sh](https://github.com/SemiAnalysisAI/InferenceX/blob/main/benchmarks/single_node/agentic/qwen3.5_fp4_mi355x_sglang_mtp.sh).
 
 ## Prerequisites
 
 - Docker with ROCm devices (`/dev/kfd`, `/dev/dri`)
-- Image `rocm/sgl-dev:v0.5.19-rocm720-mi35x-20260906` (override with `IMAGE`)
+- Image `rocm/sgl-dev:v0.5.19-rocm720-mi35x-20260906` for manual local runs; the sweep pulls its pinned official image
 - Weights: `/data2/amd/Qwen3.5-397B-A17B-MXFP4`
 - Traces: `/data2/huggingface/dataset/cc-traces-weka-062126-256k/traces.jsonl`
 - InferenceX checkout: `/home/chuyeh/workspace/InferenceX`
 - AIPerf tree at pin `754356e9`: `/data2/zijchen/InferenceX_main_20260908/utils/aiperf`
 
 Do **not** run the upstream combined recipe. Its EXIT trap kills the server after the client.
+
+## One-click remote sweep
+
+On an isolated 8-GPU MI355X server, start with:
+
+```bash
+cd /path/to/sglang-profiling-tutorial/agentx
+./run_official_qwen35_agentx_sweep.sh
+```
+
+No per-run environment exports are needed. The runner:
+
+- discovers the model, trace dataset, InferenceX, and AIPerf at common `/data2` locations;
+- bootstraps the pinned InferenceX/AIPerf source when it is absent;
+- pulls `lmsysorg/sglang-rocm:v0.5.18-rocm720-mi35x-20260829`;
+- verifies Docker, eight ROCm devices, enough host DRAM and result-disk space, an idle `/dev/kfd`, and a free port;
+- runs each point sequentially in a fresh container with `DURATION=3600`, ten warmup requests per lane, EP1, MTP, and the official TP2/TP4 DRAM budgets;
+- turns the torch profiler off, validates each aggregate, checkpoints it, and cleans up the container;
+- stops starting work before the 23-hour deadline and writes `summary.csv` plus `summary.json`.
+
+Inspect everything without pulling an image or starting a benchmark:
+
+```bash
+./run_official_qwen35_agentx_sweep.sh --plan
+```
+
+Validate Docker, GPUs, memory, disk, ports, image, and campaign state without starting a point:
+
+```bash
+./run_official_qwen35_agentx_sweep.sh --mode full --preflight
+```
+
+The default `24h` mode selects all ten TP2 points and six representative TP4 points. Based on the measured average of about 78 minutes per point, those 16 points take roughly 21 hours. It is a reduced official-compatible matrix, not the complete published curve.
+
+The complete official matrix has 24 points and takes about 31 hours sequentially. InferenceX requests the node with `--exclusive`, so running TP2 and TP4 jobs side by side would introduce shared-node interference and would not be a like-for-like reproduction. Run the full matrix across two bookings instead:
+
+```bash
+./run_official_qwen35_agentx_sweep.sh --mode full
+```
+
+When the deadline guard pauses it, release the machine. Run the exact same command in the next booking; validated points are skipped automatically. You can also run the default mode first and later switch to `--mode full` because both modes share checkpoints.
+
+If the local machine is continuously available for more than 31 hours, run the full sweep in one session:
+
+```bash
+./run_official_qwen35_agentx_sweep.sh --mode full --hours 48
+```
+
+Start only when every GPU is idle. The preflight rejects VRAM left on any device because InferenceX uses an exclusive node for these measurements.
+
+The clock starts when the command starts. Launch it near the beginning of the reservation; if only 12 hours remain, pass `--hours 12` and it will stop scheduling points earlier.
+
+Weights and traces must be staged before the timed booking; automatically downloading a 397B checkpoint would consume an unpredictable fraction of it. The runner verifies model revision `edf0958bc373` by its config/index checksums and trace revision `8fecd2fc5669` by its data checksum, so it fails early instead of benchmarking the wrong snapshot. If the paths are unusual, save them once instead of exporting variables in every shell:
+
+```bash
+cp machine.conf.example machine.conf
+$EDITOR machine.conf
+./run_official_qwen35_agentx_sweep.sh --plan
+```
+
+The runner prefers a writable data-disk campaign such as `/data2/models/agentx-runs/$USER/agentx-qwen35-official-mi355x-v0518/` and falls back to `../campaigns/`. The exact path is printed by `--plan`. Important files are:
+
+- `manifest.tsv`: all official points and the points selected by the latest mode;
+- `status.tsv` / `sweep.log`: scheduler history and complete console log;
+- `points/<point>/agentx_result.json`: the clean aggregate for one point;
+- `summary.csv` / `summary.json`: dashboard-oriented throughput, interactivity, TTFT, cache, and list-price token-per-dollar fields.
+
+Power collection is disabled in this Docker workflow. The container can see all eight host devices while a TP2/TP4 aggregate expects two/four, which makes InferenceX correctly reject that telemetry as a GPU-count mismatch. This does not affect throughput, latency, or list-price token-per-dollar metrics.
+
+If a clean point is problematic, rerun that exact checkpoint with profiling rather than profiling the sweep:
+
+```bash
+CAMPAIGN=/path/printed/by/plan
+POINT=tp4-c64-hicache
+source "$CAMPAIGN/points/$POINT/point.env"
+
+RESULT_DIR="$CAMPAIGN/profiles/$POINT" \
+CONTAINER_NAME="agentx-profile-$POINT" \
+STOP_CONTAINER_AFTER=1 \
+  ./run_profile_point.sh "$POINT" "$TP" "$CONC" "$GPUS" "$KV_OFFLOADING"
+```
+
+Do not report the profiled rerun's aggregate as a benchmark result.
 
 ## Quick start
 
@@ -48,8 +131,10 @@ Defaults: **TP=2**, **CONC=1**, **kv-offloading=none**, **DURATION=180**, GPUs `
 | `qwen3.5_fp4_mi355x_run_client.sh` | `docker exec` of the AIPerf replay |
 | `run_replay_inside.sh` | In-container helper (sources InferenceX `benchmark_lib.sh`) |
 | `trigger_torch_profile.sh` | Phase-aware host controller for `/start_profile` and `/stop_profile` |
+| `run_clean_point.sh` | Clean point lifecycle helper used by the sweep |
+| `run_official_qwen35_agentx_sweep.sh` | Deadline-aware, resumable remote sweep |
+| `summarize_sweep.py` | Builds sweep `summary.csv` and `summary.json` |
 | `run_profile_point.sh` | One-point launch + replay + torch-profile convenience wrapper |
-| `run_tp4_hicache_canonical.sh` | Canonical TP4 HiCache benchmark sweep (no torch profiler) |
 
 ## Results
 
@@ -277,11 +362,11 @@ export ENABLE_TORCH_PROFILER=1 PROFILE_DELAY_S=300 PROFILE_WINDOW_S=12
 
 This is convenient for quick investigation, but its aggregate benchmark metrics are profiler-contaminated. Always use a fresh `RESULT_DIR` for every capture.
 
-## Moving to another 8-GPU MI355X server
+## Manual split workflow on another MI355X server
 
 The scripts do not reserve GPUs 4-7; any physical GPU list is accepted. The number of IDs must equal `TP`. For example, use `GPUS=0,1,2,3` or `GPUS=4,5,6,7` for TP4. The official Qwen3.5 AgentX matrix uses TP2 and TP4; having eight GPUs available does not by itself make TP8 comparable to those published points.
 
-Set machine-specific paths before launch:
+The one-click sweep discovers these paths or reads `machine.conf`. Only the lower-level manual launch/client scripts require exports:
 
 ```bash
 export DATA_ROOT=/data2

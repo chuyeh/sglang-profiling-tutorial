@@ -103,11 +103,14 @@ DOCKER_ARGS=(
     --cap-add SYS_PTRACE
     --security-opt seccomp=unconfined
     -v "$DATA_ROOT":"$DATA_ROOT":ro
+    -v "$MODEL_PATH":"$MODEL_PATH":ro
+    -v "$AGENTX_TRACE_LOCAL_DIR":"$AGENTX_TRACE_LOCAL_DIR":ro
     -v "$INFERENCEX_ROOT":/inferencex:ro
     -v "$AIPERF_HOST":/opt/aiperf:ro
     -v "$RESULT_DIR":/results
     -v "$SCRIPT_DIR":/opt/agentx:ro
     -v "$HF_HOME":/hf_home
+    -v "$AGENTX_SHARED_CACHE_DIR":/agentx-cache
     -w /inferencex
 )
 

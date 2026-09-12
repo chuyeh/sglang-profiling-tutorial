@@ -29,10 +29,12 @@ if [[ $resolve_rc -ne 0 ]]; then
     TRACE_SOURCE_FLAG="--public-dataset $WEKA_LOADER_OVERRIDE"
 fi
 
-# aiperf --tokenizer uses $MODEL. Point it at the local checkpoint while keeping
-# the OpenAI wire name on SERVED_MODEL_NAME (set by the launch container env).
+# aiperf --tokenizer uses $MODEL while the aggregate also records $MODEL as
+# metadata. Build the command with the local checkpoint, then restore the
+# official model ID before replay/aggregation.
+metadata_model="$MODEL"
 export MODEL="${MODEL_PATH:-$MODEL}"
-
 build_replay_cmd "$RESULT_DIR"
+export MODEL="$metadata_model"
 REPLAY_CMD+=" --apply-chat-template"
 run_agentic_replay_and_write_outputs "$RESULT_DIR"

@@ -1,0 +1,16 @@
+# Optional persistent overrides for run_official_qwen35_agentx_sweep.sh.
+# Copy this file to machine.conf only when automatic discovery is insufficient.
+# Do not export these variables in every terminal session.
+
+SWEEP_DATA_ROOT=/data2
+SWEEP_MODEL_PATH=/data2/amd/Qwen3.5-397B-A17B-MXFP4
+SWEEP_TRACE_DIR=/data2/huggingface/dataset/cc-traces-weka-062126-256k
+
+# Usually unnecessary: the runner can bootstrap the pinned checkouts.
+# SWEEP_INFERENCEX_ROOT=/path/to/InferenceX
+# SWEEP_AIPERF_ROOT=/path/to/InferenceX/utils/aiperf
+
+# Results persist here so a later booking can resume completed points.
+# SWEEP_CAMPAIGN_DIR=/writable/data/agentx-runs/qwen35-official-mi355x
+# SWEEP_HF_HOME=/writable/data/agentx-cache/huggingface
+# SWEEP_SHARED_CACHE_DIR=/writable/data/agentx-cache/runtime
