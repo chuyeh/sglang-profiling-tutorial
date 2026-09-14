@@ -2,14 +2,14 @@
 
 Split InferenceX’s combined AgentX recipe into a **server launch** script and an **AIPerf client** script so you can keep SGLang up, rerun the benchmark, and stop the container yourself.
 
-The manual split workflow defaults to a short local run. The one-click sweep below pins the official 3600-second recipe and image, but it is still a private reproduction rather than an InferenceX CI submission.
+The manual split workflow defaults to a short local run. The one-click sweep below pins the official 3600-second recipe and a specific SGLang image, but it is still a private reproduction rather than an InferenceX CI submission.
 
 Upstream recipe: [qwen3.5_fp4_mi355x_sglang_mtp.sh](https://github.com/SemiAnalysisAI/InferenceX/blob/main/benchmarks/single_node/agentic/qwen3.5_fp4_mi355x_sglang_mtp.sh).
 
 ## Prerequisites
 
 - Docker with ROCm devices (`/dev/kfd`, `/dev/dri`)
-- Image `rocm/sgl-dev:v0.5.19-rocm720-mi35x-20260906` for manual local runs; the sweep pulls its pinned official image
+- Image `rocm/sgl-dev:v0.5.19-rocm720-mi35x-20260911` for manual local runs and the one-click sweep
 - Weights: `/data2/amd/Qwen3.5-397B-A17B-MXFP4`
 - Traces: `/data2/huggingface/dataset/cc-traces-weka-062126-256k/traces.jsonl`
 - InferenceX checkout: `/home/chuyeh/workspace/InferenceX`
@@ -30,7 +30,7 @@ No per-run environment exports are needed. The runner:
 
 - discovers the model, trace dataset, InferenceX, and AIPerf at common `/data2` locations;
 - bootstraps the pinned InferenceX/AIPerf source when it is absent;
-- pulls `lmsysorg/sglang-rocm:v0.5.18-rocm720-mi35x-20260829`;
+- pulls `rocm/sgl-dev:v0.5.19-rocm720-mi35x-20260911`;
 - verifies Docker, eight ROCm devices, enough host DRAM and result-disk space, an idle `/dev/kfd`, and a free port;
 - runs each point sequentially in a fresh container with `DURATION=3600`, ten warmup requests per lane, EP1, MTP, and the official TP2/TP4 DRAM budgets;
 - turns the torch profiler off, validates each aggregate, checkpoints it, and cleans up the container;
@@ -76,7 +76,7 @@ $EDITOR machine.conf
 ./run_official_qwen35_agentx_sweep.sh --plan
 ```
 
-The runner prefers a writable data-disk campaign such as `/data2/models/agentx-runs/$USER/agentx-qwen35-official-mi355x-v0518/` and falls back to `../campaigns/`. The exact path is printed by `--plan`. Important files are:
+The runner prefers a writable data-disk campaign such as `/data2/models/agentx-runs/$USER/agentx-qwen35-official-mi355x-v0519-20260911/` and falls back to `../campaigns/`. The exact path is printed by `--plan`. Important files are:
 
 - `manifest.tsv`: all official points and the points selected by the latest mode;
 - `status.tsv` / `sweep.log`: scheduler history and complete console log;
@@ -220,7 +220,7 @@ CASE_ID=qwen35-tp4-c56-hicache
 CASE_ROOT=$PWD/../campaigns/$CASE_ID
 KV_MODE=dram
 
-export IMAGE=rocm/sgl-dev:v0.5.19-rocm720-mi35x-20260906
+export IMAGE=rocm/sgl-dev:v0.5.19-rocm720-mi35x-20260911
 export SGLANG_ROOT=/path/to/your/sglang       # omit to use the image's SGLang
 export TP=4 EP_SIZE=1 CONC=56 GPUS=4,5,6,7
 export KV_OFFLOADING=dram KV_OFFLOAD_BACKEND=hicache
@@ -384,7 +384,7 @@ export HF_HOME=/data2/cache/agentx-huggingface
 
 | Variable | Default |
 |---|---|
-| `IMAGE` | `rocm/sgl-dev:v0.5.19-rocm720-mi35x-20260906` |
+| `IMAGE` | `rocm/sgl-dev:v0.5.19-rocm720-mi35x-20260911` |
 | `MODEL` / `MODEL_PATH` | `amd/Qwen3.5-397B-A17B-MXFP4` / `/data2/amd/Qwen3.5-397B-A17B-MXFP4` |
 | `TP` / `EP_SIZE` / `CONC` | `2` / `1` / `1` |
 | `KV_OFFLOADING` | `none` |

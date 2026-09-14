@@ -33,7 +33,7 @@ readonly CURRENT_USER="${USER:-$(id -un)}"
 # -----------------------------------------------------------------------------
 readonly PINNED_INFERENCEX_REVISION="9acf24caaf31d9ecc5067742d6d1415967b308ed"
 readonly PINNED_AIPERF_REVISION="754356e9a39acc6cc6afb242d123bb57c3fb6f75"
-readonly PINNED_IMAGE="lmsysorg/sglang-rocm:v0.5.18-rocm720-mi35x-20260829"
+readonly PINNED_IMAGE="rocm/sgl-dev:v0.5.19-rocm720-mi35x-20260911"
 readonly PINNED_MODEL_ID="amd/Qwen3.5-397B-A17B-MXFP4"
 readonly PINNED_MODEL_REVISION="edf0958bc3734dda98a9d191cc7a0a83c4f42821"
 # Local model directories may lack Git metadata, so verify their two small
@@ -479,11 +479,11 @@ IMAGE="$PINNED_IMAGE"
 if [[ -n "${SWEEP_CAMPAIGN_DIR:-}" ]]; then
     default_campaign_dir="$SWEEP_CAMPAIGN_DIR"
 elif [[ -d "$DATA_ROOT/$CURRENT_USER" && -w "$DATA_ROOT/$CURRENT_USER" ]]; then
-    default_campaign_dir="$DATA_ROOT/$CURRENT_USER/agentx-runs/agentx-qwen35-official-mi355x-v0518"
+    default_campaign_dir="$DATA_ROOT/$CURRENT_USER/agentx-runs/agentx-qwen35-official-mi355x-v0519-20260911"
 elif [[ -d "$DATA_ROOT/models" && -w "$DATA_ROOT/models" ]]; then
-    default_campaign_dir="$DATA_ROOT/models/agentx-runs/$CURRENT_USER/agentx-qwen35-official-mi355x-v0518"
+    default_campaign_dir="$DATA_ROOT/models/agentx-runs/$CURRENT_USER/agentx-qwen35-official-mi355x-v0519-20260911"
 else
-    default_campaign_dir="$REPO_ROOT/campaigns/agentx-qwen35-official-mi355x-v0518"
+    default_campaign_dir="$REPO_ROOT/campaigns/agentx-qwen35-official-mi355x-v0519-20260911"
 fi
 CAMPAIGN_DIR="$(realpath -m "$default_campaign_dir")"
 HF_HOME="$(realpath -m "${SWEEP_HF_HOME:-$SCRIPT_DIR/.cache/huggingface}")"
@@ -704,11 +704,12 @@ validate_result() {
     local expected_tp="$2"
     local expected_conc="$3"
     local expected_kv="$4"
-    python3 - "$result_path" "$expected_tp" "$expected_conc" "$expected_kv" <<'PY'
+    python3 - "$result_path" "$expected_tp" "$expected_conc" "$expected_kv" \
+        "$CANONICAL_FAILED_REQUEST_THRESHOLD" <<'PY'
 import json
 import sys
 
-path, expected_tp, expected_conc, expected_kv = sys.argv[1:]
+path, expected_tp, expected_conc, expected_kv, failed_request_threshold = sys.argv[1:]
 try:
     with open(path, encoding="utf-8") as handle:
         result = json.load(handle)
@@ -722,13 +723,22 @@ throughput = (
     .get("total_tput_tps")
 )
 errors = result.get("request_accounting", {}).get("records_error_dropped")
+successful = result.get("num_requests_successful")
+profiled_requests = (
+    successful + errors
+    if isinstance(successful, int) and isinstance(errors, int)
+    else 0
+)
+error_rate = errors / profiled_requests if profiled_requests > 0 else 1.0
 valid = (
     result.get("tp") == int(expected_tp)
     and result.get("conc") == int(expected_conc)
     and result.get("kv_offloading") == expected_kv
-    and isinstance(result.get("num_requests_successful"), int)
-    and result["num_requests_successful"] > 0
-    and errors == 0
+    and isinstance(successful, int)
+    and successful > 0
+    and isinstance(errors, int)
+    and errors >= 0
+    and error_rate <= float(failed_request_threshold)
     and isinstance(throughput, (int, float))
     and throughput > 0
 )

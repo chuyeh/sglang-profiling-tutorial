@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
 agentx_validate_gpu_selection
+agentx_validate_kv_offload
 agentx_require_paths
 agentx_prepare_hf_cache
 mkdir -p "$RESULT_DIR"

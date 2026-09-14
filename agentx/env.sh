@@ -18,7 +18,7 @@ fi
 AIPERF_HOST="${AIPERF_HOST:-$_default_aiperf_host}"
 unset _default_aiperf_host
 
-IMAGE="${IMAGE:-rocm/sgl-dev:v0.5.19-rocm720-mi35x-20260906}"
+IMAGE="${IMAGE:-rocm/sgl-dev:v0.5.19-rocm720-mi35x-20260911}"
 RECIPE_FINGERPRINT="${RECIPE_FINGERPRINT:-}"
 CONTAINER_NAME="${CONTAINER_NAME:-agentx-qwen35-fp4-mi355x}"
 
@@ -53,7 +53,9 @@ KV_OFFLOAD_BACKEND="${KV_OFFLOAD_BACKEND:-}"
 # InferenceX aggregation requires JSON metadata matching the yaml
 # kv-offload-backend object, e.g. {"name":"hicache"}.
 if [[ "$KV_OFFLOADING" == "dram" && -n "$KV_OFFLOAD_BACKEND" && "$KV_OFFLOAD_BACKEND" != "none" ]]; then
-    KV_OFFLOAD_BACKEND_METADATA="${KV_OFFLOAD_BACKEND_METADATA:-{\"name\":\"${KV_OFFLOAD_BACKEND}\"}}"
+    if [[ -z "${KV_OFFLOAD_BACKEND_METADATA:-}" ]]; then
+        KV_OFFLOAD_BACKEND_METADATA="{\"name\":\"$KV_OFFLOAD_BACKEND\"}"
+    fi
 else
     KV_OFFLOAD_BACKEND_METADATA="${KV_OFFLOAD_BACKEND_METADATA:-}"
 fi
@@ -135,8 +137,50 @@ agentx_validate_gpu_selection() {
     done
 }
 
+agentx_validate_kv_offload() {
+    if [[ "$KV_OFFLOADING" == "none" ]]; then
+        if [[ -n "$KV_OFFLOAD_BACKEND" || -n "$KV_OFFLOAD_BACKEND_METADATA" ]]; then
+            echo "ERROR: KV offload backend metadata must be empty when KV_OFFLOADING=none" >&2
+            return 1
+        fi
+        return 0
+    fi
+    if [[ "$KV_OFFLOADING" != "dram" ]]; then
+        echo "ERROR: KV_OFFLOADING must be none or dram, got: $KV_OFFLOADING" >&2
+        return 1
+    fi
+    if [[ -z "$KV_OFFLOAD_BACKEND" || "$KV_OFFLOAD_BACKEND" == "none" ]]; then
+        echo "ERROR: KV_OFFLOAD_BACKEND is required when KV_OFFLOADING=dram" >&2
+        return 1
+    fi
+
+    python3 - "$KV_OFFLOAD_BACKEND" "$KV_OFFLOAD_BACKEND_METADATA" <<'PY'
+import json
+import sys
+
+backend, raw_metadata = sys.argv[1:]
+try:
+    metadata = json.loads(raw_metadata)
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"ERROR: KV_OFFLOAD_BACKEND_METADATA must contain valid JSON: {exc}")
+if not isinstance(metadata, dict) or set(metadata) not in (
+    {"name"},
+    {"name", "version"},
+):
+    raise SystemExit(
+        "ERROR: KV_OFFLOAD_BACKEND_METADATA must contain 'name' and optional 'version'"
+    )
+if not all(isinstance(value, str) and value for value in metadata.values()):
+    raise SystemExit("ERROR: KV_OFFLOAD_BACKEND_METADATA values must be non-empty strings")
+if metadata["name"] != backend:
+    raise SystemExit(
+        "ERROR: KV_OFFLOAD_BACKEND must match KV_OFFLOAD_BACKEND_METADATA.name"
+    )
+PY
+}
+
 agentx_prepare_hf_cache() {
-    local dest snap name
+    local dest snap name ref ref_tmp current_ref
     if [[ ! -s "$AGENTX_TRACE_LOCAL_DIR/traces.jsonl" ]]; then
         echo "ERROR: missing traces at $AGENTX_TRACE_LOCAL_DIR/traces.jsonl" >&2
         return 1
@@ -148,7 +192,18 @@ agentx_prepare_hf_cache() {
         "$AGENTX_SHARED_CACHE_DIR/uv-cache" \
         "$AGENTX_SHARED_CACHE_DIR/aiperf-mmap" \
         "$AGENTX_SHARED_CACHE_DIR/hf-datasets"
-    printf '%s\n' "$AGENTX_TRACE_REVISION" > "$dest/refs/main"
+    ref="$dest/refs/main"
+    current_ref=""
+    if [[ -r "$ref" ]]; then
+        IFS= read -r current_ref < "$ref" || true
+    fi
+    if [[ "$current_ref" != "$AGENTX_TRACE_REVISION" ]]; then
+        # The container may atomically replace this bind-mounted file as root.
+        # Replace through its user-owned parent instead of opening it in place.
+        ref_tmp="$dest/refs/.main.$$"
+        printf '%s\n' "$AGENTX_TRACE_REVISION" > "$ref_tmp"
+        mv -f "$ref_tmp" "$ref"
+    fi
     for name in traces.jsonl README.md stats.txt .gitattributes plots; do
         if [[ -e "$AGENTX_TRACE_LOCAL_DIR/$name" ]]; then
             ln -sfn "$AGENTX_TRACE_LOCAL_DIR/$name" "$snap/$name"

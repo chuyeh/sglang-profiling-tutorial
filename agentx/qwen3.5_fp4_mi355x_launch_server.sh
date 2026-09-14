@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
 agentx_validate_gpu_selection
+agentx_validate_kv_offload
 agentx_require_paths
 agentx_prepare_hf_cache
 mkdir -p "$RESULT_DIR"
@@ -23,9 +24,9 @@ if agentx_bool_enabled "$ENABLE_TORCH_PROFILER"; then
 fi
 
 MAX_RUNNING_REQUESTS=$((2 * CONC))
-CUDA_GRAPH_MAX_BS=$MAX_RUNNING_REQUESTS
-if [ "$CUDA_GRAPH_MAX_BS" -gt 128 ]; then
-    CUDA_GRAPH_MAX_BS=128
+CUDA_GRAPH_MAX_BS_DECODE=$MAX_RUNNING_REQUESTS
+if [ "$CUDA_GRAPH_MAX_BS_DECODE" -gt 128 ]; then
+    CUDA_GRAPH_MAX_BS_DECODE=128
 fi
 
 CACHE_ARGS=()
@@ -69,7 +70,7 @@ SGLANG_CMD=(
     --watchdog-timeout 1200
     --page-size 16
     --kv-cache-dtype fp8_e4m3
-    --cuda-graph-max-bs "$CUDA_GRAPH_MAX_BS"
+    --cuda-graph-max-bs-decode "$CUDA_GRAPH_MAX_BS_DECODE"
     --max-running-requests "$MAX_RUNNING_REQUESTS"
     --max-prefill-tokens 16384
     --chunked-prefill-size 16384
